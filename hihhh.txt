@@ -1,0 +1,129 @@
+import os
+import logging
+import mimetypes
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+from github import Github
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+TELEGRAM_BOT_TOKEN = '6192859310:AAFYnT5AvaO6Yq6S4Cb9WetsazPCdsx5BSs'
+GITHUB_ACCESS_TOKEN = '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'
+GITHUB_USERNAME = 'Repo-Courses'
+
+github = Github(GITHUB_ACCESS_TOKEN)
+github_user = github.get_user()
+
+REPOSITORY_SELECTION, NEW_REPOSITORY = range(2)
+
+def list_repositories():
+    return [repo.name for repo in github_user.get_repos()]
+
+def create_repository(repo_name):
+    return github_user.create_repo(repo_name)
+
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Welcome to the Course Materials Bot! Send me a text message, and I'll reply with the same text.")
+
+def handle_repository_selection(update: Update, context: CallbackContext):
+    selected_repo = update.message.text
+    if selected_repo == "Add new repository":
+        update.message.reply_text("Enter the new repository name:")
+    else:
+        update.message.reply_text(f"You have selected {selected_repo}.")
+
+def text_handler(update: Update, context: CallbackContext):
+    repositories = list_repositories()
+    reply_keyboard = [repositories[i:i + 3] for i in range(0, len(repositories), 3)]
+    reply_keyboard.append(['Add new repository'])
+    update.message.reply_text("Select the repository:", reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True))
+    
+    # Register the new handler
+    context.dispatcher.add_handler(MessageHandler(Filters.text, handle_repository_selection))
+
+
+def photo_handler(update: Update, context: CallbackContext):
+    file_id = update.message.photo[-1].file_id
+    file = context.bot.get_file(file_id)
+    file_name = f"{file_id}.{file.file_path.split('.')[-1]}"
+    context.user_data['file_id'] = file_id
+    context.user_data['file_name'] = file_name
+    return prompt_repository_selection(update, context)
+
+def text_handler(update: Update, context: CallbackContext):
+    file_name = f"{update.message.message_id}.txt"
+    context.user_data['text'] = update.message.text
+    context.user_data['file_name'] = file_name
+    return prompt_repository_selection(update, context)
+
+def prompt_repository_selection(update: Update, context: CallbackContext):
+    repositories = list_repositories()
+    reply_keyboard = [repositories[i:i + 3] for i in range(0, len(repositories), 3)]
+    reply_keyboard.append(['Add new repository'])
+    update.message.reply_text("Select the repository:", reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True))
+    return REPOSITORY_SELECTION
+
+
+
+def repository_selection_handler(update: Update, context: CallbackContext):
+    selected_repo = update.message.text
+    if selected_repo == "Add new repository":
+        update.message.reply_text("Enter the new repository name:", reply_markup=ReplyKeyboardRemove())
+        return NEW_REPOSITORY
+    else:
+        process_and_upload_file(update, context, selected_repo)
+        return ConversationHandler.END
+
+def prompt_new_repository(update: Update, context: CallbackContext):
+    update.message.reply_text("Enter the new repository name:", reply_markup=ReplyKeyboardRemove())
+    return NEW_REPOSITORY
+
+def new_repository_handler(update: Update, context: CallbackContext):
+    new_repo_name = update.message.text
+    try:
+        new_repo = create_repository(new_repo_name)
+        process_and_upload_file(update, context, new_repo_name)
+    except Exception as e:
+        logger.error(e)
+        update.message.reply_text("An error occurred while creating the new repository. Please try again.")
+    return ConversationHandler.END
+
+def process_and_upload_file(update: Update, context: CallbackContext, repo_name: str):
+    file_name = context.user_data['file_name']
+    repo = github_user.get_repo(repo_name)
+
+    try:
+        if 'file_id' in context.user_data:
+            file_id = context.user_data['file_id']
+            file = context.bot.get_file(file_id)
+            file_content = file.download_as_bytearray()
+            repo.create_file(file_name, f"Add {file_name} to {repo_name}", file_content)
+            update.message.reply_text("Photo uploaded successfully to the selected repository!")
+        elif 'text' in context.user_data:
+            text_content = context.user_data['text']
+            repo.create_file(file_name, f"Add {file_name} to {repo_name}", text_content)
+            update.message.reply_text("Text uploaded successfully to the selected repository!")
+    except Exception as e:
+        logger.error(e)
+        update.message.reply_text("An error occurred while uploading the file. Please try again.")
+
+def cancel(update: Update, context: CallbackContext):
+    update.message.reply_text('Operation cancelled.', reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+
+def main():
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler))
+
+    updater.start_polling()
+    updater.idle()
+
+
+if __name__ == '__main__':
+    main()
